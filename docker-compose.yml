@@ -1,0 +1,20 @@
+# 中国驾考科目一模拟考试 - docker-compose
+# NAS 部署：把本文件放到 NAS 上，执行 `docker compose up -d` 即可
+# 首次拉取可能需要登录 GHCR（公开镜像一般无需登录，若 NAS 提示需要认证，
+# 执行：echo <YOUR_GITHUB_PAT> | docker login ghcr.io -u Einsphoton --password-stdin）
+
+services:
+  driver-license-go:
+    image: ghcr.io/einsphoton/driver-license-go:latest
+    container_name: driver-license-go
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/stats', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
