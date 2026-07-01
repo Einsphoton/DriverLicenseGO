@@ -6,7 +6,7 @@
     stats: "/api/stats",
     allQuestions: "/api/questions/all",
     category: (kw) => "/api/questions/category/" + encodeURIComponent(kw),
-    generateExam: "/api/exam/generate",
+    generateExam: (type) => "/api/exam/generate?type=" + encodeURIComponent(type || "new"),
     submitExam: "/api/exam/submit",
   };
 
@@ -155,12 +155,35 @@
     banner.appendChild(row);
     wrap.appendChild(banner);
 
+    // 考试类型选择区
+    const examSection = el("div", { class: "exam-type-section" });
+    examSection.appendChild(el("div", { class: "section-title" }, "选择考试类型"));
+    const examGrid = el("div", { class: "exam-type-grid" });
+
+    // 新考驾照
+    const newCard = el("div", { class: "exam-type-card primary", onclick: () => go("#/exam/new") });
+    newCard.appendChild(el("div", { class: "exam-icon" }, "📝"));
+    newCard.appendChild(el("div", { class: "exam-name" }, "新考驾照"));
+    newCard.appendChild(el("div", { class: "exam-meta" }, "100 题 · 45 分钟 · 每题 1 分"));
+    newCard.appendChild(el("div", { class: "exam-desc" }, "科目一正式考试规则，判断 40 + 单选 60，90 分及格"));
+    examGrid.appendChild(newCard);
+
+    // 恢复驾照
+    const restoreCard = el("div", { class: "exam-type-card secondary", onclick: () => go("#/exam/restore") });
+    restoreCard.appendChild(el("div", { class: "exam-icon" }, "🔄"));
+    restoreCard.appendChild(el("div", { class: "exam-name" }, "恢复驾照"));
+    restoreCard.appendChild(el("div", { class: "exam-meta" }, "50 题 · 30 分钟 · 每题 2 分"));
+    const poolCount = stats.exam_types ? stats.exam_types.restore.question_pool : 941;
+    restoreCard.appendChild(el("div", { class: "exam-desc" }, "恢复驾驶资格考试，法规安全常识为主（题库 " + poolCount + " 题），判断 20 + 单选 30"));
+    examGrid.appendChild(restoreCard);
+
+    examSection.appendChild(examGrid);
+    wrap.appendChild(examSection);
+
+    // 练习模式
+    const practiceTitle = el("div", { class: "section-title", style: "margin-top:18px;" }, "练习模式");
+    wrap.appendChild(practiceTitle);
     const grid = el("div", { class: "home-grid" });
-    grid.appendChild(el("div", { class: "mode-card", onclick: () => go("#/exam") },
-      el("div", { class: "icon" }, "📝"),
-      el("div", { class: "title" }, "模拟考试"),
-      el("div", { class: "desc" }, "100 题 / 45 分钟，按官方规则随机抽题，交卷后查看分数与解析")
-    ));
     grid.appendChild(el("div", { class: "mode-card", onclick: () => go("#/practice") },
       el("div", { class: "icon" }, "📖"),
       el("div", { class: "title" }, "顺序练习"),
@@ -184,8 +207,9 @@
       h.appendChild(el("div", { class: "title" }, "最近模拟成绩"));
       const list = el("div", { style: "display:flex;flex-direction:column;gap:6px;" });
       history.slice(-8).reverse().forEach((r) => {
+        const typeTag = r.examType === "restore" ? " [恢复] " : " [新考] ";
         const item = el("div", { style: "display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--border);" },
-          el("span", {}, new Date(r.time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })),
+          el("span", {}, new Date(r.time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) + typeTag),
           el("span", { style: "font-weight:700;color:" + (r.passed ? "var(--success)" : "var(--danger)") },
             r.score + " 分 " + (r.passed ? "✓" : "✗"))
         );
@@ -198,16 +222,18 @@
     render(wrap);
   }
 
-  async function viewExam() {
+  async function viewExam(examType) {
+    examType = (examType === "restore") ? "restore" : "new";
+    const typeLabel = examType === "restore" ? "恢复驾照" : "新考驾照";
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("button", { class: "btn-back", onclick: () => go("#/") }, "← 返回"),
-      el("div", { class: "stats-mini" }, "加载中...")
+      el("div", { class: "stats-mini" }, typeLabel + " · 加载中...")
     ));
     wrap.appendChild(el("div", { class: "empty-state" }, el("div", { class: "icon" }, "⏳"), "正在生成试卷..."));
     render(wrap);
 
-    const paper = await get(API.generateExam);
+    const paper = await get(API.generateExam(examType));
     const state = {
       questions: paper.questions,
       answers: {},
@@ -215,6 +241,9 @@
       remaining: paper.duration_seconds,
       duration: paper.duration_seconds,
       passScore: paper.pass_score,
+      scorePerQ: paper.score_per_question || 1,
+      examType: examType,
+      examLabel: paper.exam_label || typeLabel,
       timerId: null,
     };
 
@@ -224,12 +253,12 @@
         el("button", { class: "btn-back", onclick: () => {
           if (confirm("确定要退出考试吗？已答内容不会保存。")) { clearInterval(state.timerId); go("#/"); }
         }}, "← 退出"),
-        el("div", { class: "stats-mini" }, "模拟考试 · " + paper.total + "题")
+        el("div", { class: "stats-mini" }, state.examLabel + " · " + paper.total + "题")
       ));
 
       const header = el("div", { class: "exam-header" });
       header.appendChild(el("div", { class: "progress" },
-        "第 " + (state.currentIndex + 1) + " / " + state.questions.length + " 题"));
+        "第 " + (state.currentIndex + 1) + " / " + state.questions.length + " 题 · 每题 " + state.scorePerQ + " 分"));
       const timerEl = el("div", { class: "timer" + (state.remaining < 300 ? "" : " normal") }, fmtTime(state.remaining));
       header.appendChild(timerEl);
       wrap.appendChild(header);
@@ -285,9 +314,9 @@
       wrap.appendChild(el("div", { class: "empty-state" }, el("div", { class: "icon" }, "⏳"), "正在评分..."));
       render(wrap);
 
-      const result = await post(API.submitExam, { answers: state.answers });
+      const result = await post(API.submitExam, { answers: state.answers, exam_type: state.examType });
       const history = JSON.parse(localStorage.getItem("s1_history") || "[]");
-      history.push({ time: Date.now(), score: result.score, passed: result.passed, correct: result.correct, total: result.total });
+      history.push({ time: Date.now(), score: result.score, passed: result.passed, correct: result.correct, total: result.total, examType: state.examType });
       localStorage.setItem("s1_history", JSON.stringify(history));
       result.details.filter(d => !d.is_correct).forEach(d => Store.addWrong(d.id));
       renderResult(result);
@@ -297,7 +326,7 @@
       const wrap = el("div");
       wrap.appendChild(el("div", { class: "navbar" },
         el("button", { class: "btn-back", onclick: () => go("#/") }, "← 返回首页"),
-        el("div", { class: "stats-mini" }, "考试结果")
+        el("div", { class: "stats-mini" }, result.exam_label + " · 考试结果")
       ));
 
       const hero = el("div", { class: "result-hero" });
@@ -305,11 +334,11 @@
       hero.appendChild(el("div", { class: "verdict", style: "color:" + (result.passed ? "var(--success)" : "var(--danger)") },
         result.passed ? "🎉 恭喜通过！" : "❌ 未通过"));
       hero.appendChild(el("div", { class: "summary" },
-        "答对 " + result.correct + " / " + result.total + " 题  ·  错 " + result.wrong + " 题  ·  及格线 90 分"));
+        "答对 " + result.correct + " / " + result.total + " 题  ·  错 " + result.wrong + " 题  ·  及格线 " + result.pass_score + " 分（每题 " + result.score_per_question + " 分）"));
       wrap.appendChild(hero);
 
       const btns = el("div", { class: "exam-footer", style: "position:static;" });
-      btns.appendChild(el("button", { class: "btn btn-secondary", onclick: () => go("#/exam") }, "再考一次"));
+      btns.appendChild(el("button", { class: "btn btn-secondary", onclick: () => go("#/exam/" + state.examType) }, "再考一次"));
       btns.appendChild(el("button", { class: "btn btn-primary", onclick: () => go("#/wrong") }, "查看错题"));
       wrap.appendChild(btns);
 
@@ -591,7 +620,8 @@
   function router() {
     const hash = location.hash.slice(1) || "/";
     if (hash === "/" || hash === "") return viewHome().catch(errHandler);
-    if (hash === "/exam") return viewExam().catch(errHandler);
+    if (hash === "/exam" || hash === "/exam/new") return viewExam("new").catch(errHandler);
+    if (hash === "/exam/restore") return viewExam("restore").catch(errHandler);
     if (hash === "/practice") return viewPractice().catch(errHandler);
     if (hash === "/wrong") return viewWrong().catch(errHandler);
     if (hash === "/category") return viewCategory().catch(errHandler);

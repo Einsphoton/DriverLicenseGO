@@ -75,6 +75,32 @@ body {
 .mode-card .title { font-size: 17px; font-weight: 600; }
 .mode-card .desc { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
 
+/* 考试类型选择区 */
+.section-title {
+  font-size: 15px; font-weight: 600; color: var(--text-muted);
+  margin: 4px 2px 8px; letter-spacing: .5px;
+}
+.exam-type-section { margin-top: 6px; }
+.exam-type-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+}
+@media (max-width: 560px) { .exam-type-grid { grid-template-columns: 1fr; } }
+.exam-type-card {
+  border-radius: var(--radius); padding: 22px 18px; cursor: pointer;
+  transition: transform .15s, box-shadow .15s; border: 2px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+  background: var(--card); box-shadow: var(--shadow);
+}
+.exam-type-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.12); }
+.exam-type-card.primary { border-color: var(--primary); }
+.exam-type-card.primary .exam-icon { color: var(--primary); }
+.exam-type-card.secondary { border-color: var(--success); }
+.exam-type-card.secondary .exam-icon { color: var(--success); }
+.exam-type-card .exam-icon { font-size: 32px; line-height: 1; }
+.exam-type-card .exam-name { font-size: 18px; font-weight: 700; }
+.exam-type-card .exam-meta { font-size: 13px; font-weight: 600; color: var(--text); opacity: .85; }
+.exam-type-card .exam-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
 .stat-banner {
   background: linear-gradient(135deg, var(--primary), #7c3aed);
   color: #fff; border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
