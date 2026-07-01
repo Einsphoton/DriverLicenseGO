@@ -41,12 +41,37 @@ RESTORE_QUESTIONS = [q for q in ALL_QUESTIONS if not _is_visual_recognition(q)]
 RESTORE_JUDGE_QUESTIONS = [q for q in RESTORE_QUESTIONS if q["type"] == "judge"]
 RESTORE_CHOICE_QUESTIONS = [q for q in RESTORE_QUESTIONS if q["type"] == "single_choice"]
 
-# 按关键字分组（取前 24 个高频关键字作为分类）
+# 全题库按关键字分组（取前 24 个高频关键字作为分类）
 KEYWORD_MAP = {}
 for q in ALL_QUESTIONS:
     for kw in q.get("keywords", []):
         KEYWORD_MAP.setdefault(kw, []).append(q)
 TOP_KEYWORDS = sorted(KEYWORD_MAP.items(), key=lambda x: len(x[1]), reverse=True)[:24]
+
+# 恢复驾照题库按关键字分组
+RESTORE_KEYWORD_MAP = {}
+for q in RESTORE_QUESTIONS:
+    for kw in q.get("keywords", []):
+        RESTORE_KEYWORD_MAP.setdefault(kw, []).append(q)
+RESTORE_TOP_KEYWORDS = sorted(RESTORE_KEYWORD_MAP.items(), key=lambda x: len(x[1]), reverse=True)[:24]
+
+# 恢复驾照题库的 id 集合（用于错题本等场景快速判断）
+RESTORE_ID_SET = {q["id"] for q in RESTORE_QUESTIONS}
+
+
+def _get_question_pool(exam_type):
+    """根据考试类型返回对应题库"""
+    return RESTORE_QUESTIONS if exam_type == "restore" else ALL_QUESTIONS
+
+
+def _get_keyword_map(exam_type):
+    """根据考试类型返回对应关键字分组"""
+    return RESTORE_KEYWORD_MAP if exam_type == "restore" else KEYWORD_MAP
+
+
+def _get_top_keywords(exam_type):
+    """根据考试类型返回对应高频关键字"""
+    return RESTORE_TOP_KEYWORDS if exam_type == "restore" else TOP_KEYWORDS
 
 # 考试类型配置
 EXAM_CONFIG = {
@@ -80,12 +105,28 @@ def index():
 
 @app.route("/api/stats")
 def stats():
-    """题库统计"""
+    """题库统计，支持 type 参数返回对应考试类型的统计"""
+    exam_type = request.args.get("type", "new")
+    if exam_type not in EXAM_CONFIG:
+        exam_type = "new"
+
+    if exam_type == "restore":
+        pool = RESTORE_QUESTIONS
+        judges = RESTORE_JUDGE_QUESTIONS
+        choices = RESTORE_CHOICE_QUESTIONS
+        cats = RESTORE_TOP_KEYWORDS
+    else:
+        pool = ALL_QUESTIONS
+        judges = JUDGE_QUESTIONS
+        choices = CHOICE_QUESTIONS
+        cats = TOP_KEYWORDS
+
     return jsonify({
-        "total": len(ALL_QUESTIONS),
-        "judge": len(JUDGE_QUESTIONS),
-        "choice": len(CHOICE_QUESTIONS),
-        "categories": [{"keyword": k, "count": len(v)} for k, v in TOP_KEYWORDS],
+        "total": len(pool),
+        "judge": len(judges),
+        "choice": len(choices),
+        "categories": [{"keyword": k, "count": len(v)} for k, v in cats],
+        "exam_type": exam_type,
         "exam_types": {
             "new": {
                 "label": EXAM_CONFIG["new"]["label"],
@@ -109,15 +150,19 @@ def stats():
 
 @app.route("/api/questions/all")
 def all_questions():
-    """全量题库（顺序练习用）"""
-    return jsonify({"questions": ALL_QUESTIONS})
+    """全量题库（顺序练习用），支持 type 参数按考试类型筛选"""
+    exam_type = request.args.get("type", "new")
+    pool = _get_question_pool(exam_type if exam_type in EXAM_CONFIG else "new")
+    return jsonify({"questions": pool, "exam_type": exam_type})
 
 
 @app.route("/api/questions/category/<keyword>")
 def by_category(keyword):
-    """按关键字分类练习"""
-    items = KEYWORD_MAP.get(keyword, [])
-    return jsonify({"keyword": keyword, "count": len(items), "questions": items})
+    """按关键字分类练习，支持 type 参数按考试类型筛选"""
+    exam_type = request.args.get("type", "new")
+    kw_map = _get_keyword_map(exam_type if exam_type in EXAM_CONFIG else "new")
+    items = kw_map.get(keyword, [])
+    return jsonify({"keyword": keyword, "count": len(items), "questions": items, "exam_type": exam_type})
 
 
 @app.route("/api/exam/generate")

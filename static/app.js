@@ -8,11 +8,17 @@
     category: (kw) => "/api/questions/category/" + encodeURIComponent(kw),
     generateExam: (type) => "/api/exam/generate?type=" + encodeURIComponent(type || "new"),
     submitExam: "/api/exam/submit",
+    allQuestions: (type) => "/api/questions/all" + (type && type !== "new" ? "?type=" + encodeURIComponent(type) : ""),
+    category: (kw, type) => "/api/questions/category/" + encodeURIComponent(kw) + (type && type !== "new" ? "?type=" + encodeURIComponent(type) : ""),
+    stats: (type) => "/api/stats" + (type && type !== "new" ? "?type=" + encodeURIComponent(type) : ""),
   };
 
   const Store = {
     key_wrong: "s1_wrong_ids",
     key_fav: "s1_fav_ids",
+    key_exam_type: "s1_exam_type",
+    getExamType() { return localStorage.getItem(this.key_exam_type) || "new"; },
+    setExamType(t) { localStorage.setItem(this.key_exam_type, t === "restore" ? "restore" : "new"); },
     getWrong() { return JSON.parse(localStorage.getItem(this.key_wrong) || "[]"); },
     addWrong(id) { const s = new Set(this.getWrong()); s.add(id); localStorage.setItem(this.key_wrong, JSON.stringify([...s])); },
     removeWrong(id) { const s = new Set(this.getWrong()); s.delete(id); localStorage.setItem(this.key_wrong, JSON.stringify([...s])); },
@@ -138,8 +144,34 @@
     return wrap;
   }
 
+  // 创建全局考试类型切换器组件
+  function makeExamTypeSwitcher(onChange) {
+    const current = Store.getExamType();
+    const wrap = el("div", { class: "exam-switcher" });
+    const btnNew = el("button", {
+      class: "exam-switch-btn" + (current === "new" ? " active" : ""),
+      onclick: () => {
+        if (current === "new") return;
+        Store.setExamType("new");
+        if (onChange) onChange("new");
+      }
+    }, "📝 新考驾照");
+    const btnRestore = el("button", {
+      class: "exam-switch-btn" + (current === "restore" ? " active" : ""),
+      onclick: () => {
+        if (current === "restore") return;
+        Store.setExamType("restore");
+        if (onChange) onChange("restore");
+      }
+    }, "🔄 恢复驾照");
+    wrap.appendChild(btnNew);
+    wrap.appendChild(btnRestore);
+    return wrap;
+  }
+
   async function viewHome() {
-    const stats = await get(API.stats);
+    const currentType = Store.getExamType();
+    const stats = await get(API.stats(currentType));
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("div", { class: "logo" }, el("span", { class: "accent" }, "驾照"), "·科目一"),
@@ -155,9 +187,9 @@
     banner.appendChild(row);
     wrap.appendChild(banner);
 
-    // 考试类型选择区
+    // 考试类型选择区（点击直接进入对应模拟考试）
     const examSection = el("div", { class: "exam-type-section" });
-    examSection.appendChild(el("div", { class: "section-title" }, "选择考试类型"));
+    examSection.appendChild(el("div", { class: "section-title" }, "模拟考试"));
     const examGrid = el("div", { class: "exam-type-grid" });
 
     // 新考驾照
@@ -180,14 +212,21 @@
     examSection.appendChild(examGrid);
     wrap.appendChild(examSection);
 
-    // 练习模式
-    const practiceTitle = el("div", { class: "section-title", style: "margin-top:18px;" }, "练习模式");
-    wrap.appendChild(practiceTitle);
+    // 练习模式（受全局考试类型影响）
+    const practiceSection = el("div", { style: "margin-top:18px;" });
+    const practiceHeader = el("div", { style: "display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;" });
+    practiceHeader.appendChild(el("div", { class: "section-title", style: "margin:0;" }, "练习模式"));
+    // 全局考试类型切换器
+    const switcher = makeExamTypeSwitcher(() => { viewHome(); });
+    practiceHeader.appendChild(switcher);
+    practiceSection.appendChild(practiceHeader);
+
+    const typeLabel = currentType === "restore" ? "恢复驾照" : "新考驾照";
     const grid = el("div", { class: "home-grid" });
     grid.appendChild(el("div", { class: "mode-card", onclick: () => go("#/practice") },
       el("div", { class: "icon" }, "📖"),
       el("div", { class: "title" }, "顺序练习"),
-      el("div", { class: "desc" }, "按题库顺序逐题练习，即时显示答案与解析，可收藏错题")
+      el("div", { class: "desc" }, "「" + typeLabel + "」题库 " + stats.total + " 题逐题练习，即时显示答案与解析")
     ));
     grid.appendChild(el("div", { class: "mode-card", onclick: () => go("#/wrong") },
       el("div", { class: "icon" }, "❌"),
@@ -197,9 +236,10 @@
     grid.appendChild(el("div", { class: "mode-card", onclick: () => go("#/category") },
       el("div", { class: "icon" }, "🗂️"),
       el("div", { class: "title" }, "分类练习"),
-      el("div", { class: "desc" }, "按知识点关键字分类专项练习，针对突破高频考点")
+      el("div", { class: "desc" }, "「" + typeLabel + "」题库按知识点关键字专项练习（" + stats.categories.length + " 个分类）")
     ));
-    wrap.appendChild(grid);
+    practiceSection.appendChild(grid);
+    wrap.appendChild(practiceSection);
 
     const history = JSON.parse(localStorage.getItem("s1_history") || "[]");
     if (history.length) {
@@ -393,18 +433,22 @@
   }
 
   async function viewPractice() {
+    const examType = Store.getExamType();
+    const typeLabel = examType === "restore" ? "恢复驾照" : "新考驾照";
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("button", { class: "btn-back", onclick: () => go("#/") }, "← 返回"),
-      el("div", { class: "stats-mini" }, "加载题库...")
+      el("div", { class: "stats-mini" }, typeLabel + " · 加载题库...")
     ));
     wrap.appendChild(el("div", { class: "empty-state" }, el("div", { class: "icon" }, "⏳"), "加载中..."));
     render(wrap);
 
-    const data = await get(API.allQuestions);
+    const data = await get(API.allQuestions(examType));
     const questions = data.questions;
+    // 不同考试类型的进度独立存储
+    const indexKey = "s1_practice_index_" + examType;
     const state = {
-      currentIndex: parseInt(localStorage.getItem("s1_practice_index") || "0", 10),
+      currentIndex: parseInt(localStorage.getItem(indexKey) || "0", 10),
       revealed: {},
     };
     if (state.currentIndex >= questions.length) state.currentIndex = 0;
@@ -447,7 +491,7 @@
         currentIndex: Math.min(20, state.currentIndex),
       }, (i) => {
         state.currentIndex = Math.max(0, state.currentIndex - 20) + i;
-        localStorage.setItem("s1_practice_index", state.currentIndex);
+        localStorage.setItem(indexKey, state.currentIndex);
         renderCurrent(); window.scrollTo(0, 0);
       });
       wrap.appendChild(sheet);
@@ -455,13 +499,13 @@
       const footer = el("div", { class: "exam-footer" });
       if (state.currentIndex > 0) {
         footer.appendChild(el("button", { class: "btn btn-secondary", onclick: () => {
-          state.currentIndex--; localStorage.setItem("s1_practice_index", state.currentIndex);
+          state.currentIndex--; localStorage.setItem(indexKey, state.currentIndex);
           renderCurrent(); window.scrollTo(0,0);
         }}, "上一题"));
       }
       footer.appendChild(el("button", { class: "btn btn-primary", onclick: () => {
         if (state.currentIndex < questions.length - 1) {
-          state.currentIndex++; localStorage.setItem("s1_practice_index", state.currentIndex);
+          state.currentIndex++; localStorage.setItem(indexKey, state.currentIndex);
           renderCurrent(); window.scrollTo(0,0);
         } else {
           alert("已练习完毕！🎉");
@@ -543,14 +587,16 @@
   }
 
   async function viewCategory() {
-    const stats = await get(API.stats);
+    const examType = Store.getExamType();
+    const typeLabel = examType === "restore" ? "恢复驾照" : "新考驾照";
+    const stats = await get(API.stats(examType));
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("button", { class: "btn-back", onclick: () => go("#/") }, "← 返回"),
-      el("div", { class: "stats-mini" }, "分类练习")
+      el("div", { class: "stats-mini" }, typeLabel + " · 分类练习")
     ));
     wrap.appendChild(el("div", { class: "question-card" },
-      el("div", { class: "q-text", style: "font-size:16px;" }, "按知识点关键字专项练习，点击进入：")));
+      el("div", { class: "q-text", style: "font-size:16px;" }, "「" + typeLabel + "」题库按知识点关键字专项练习，点击进入：")));
 
     const list = el("div", { class: "cat-list" });
     stats.categories.forEach((c) => {
@@ -564,6 +610,8 @@
   }
 
   async function viewCategoryDetail(keyword) {
+    const examType = Store.getExamType();
+    const typeLabel = examType === "restore" ? "恢复驾照" : "新考驾照";
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("button", { class: "btn-back", onclick: () => go("#/category") }, "← 返回分类"),
@@ -571,7 +619,7 @@
     ));
     render(wrap);
 
-    const data = await get(API.category(keyword));
+    const data = await get(API.category(keyword, examType));
     const questions = data.questions;
     const state = { currentIndex: 0, revealed: {} };
 
