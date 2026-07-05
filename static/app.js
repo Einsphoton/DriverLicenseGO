@@ -535,7 +535,8 @@
       return;
     }
 
-    const data = await get(API.allQuestions);
+    // 错题本用全题库匹配，确保两种考试类型的错题都能找到
+    const data = await get(API.allQuestions("new"));
     const idMap = {}; data.questions.forEach(q => idMap[q.id] = q);
     const wrongQs = wrongIds.map(id => idMap[id]).filter(Boolean);
 
