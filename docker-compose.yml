@@ -12,9 +12,15 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+    volumes:
+      # AI 配置持久化（更新镜像不丢失配置）
+      - dlg-config:/app/config
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/stats', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  dlg-config:

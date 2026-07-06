@@ -14,6 +14,10 @@ COPY app.py .
 COPY static/ ./static/
 COPY data/ ./data/
 
+# 配置目录（AI API 配置等，建议挂载 volume 持久化）
+RUN mkdir -p /app/config
+VOLUME /app/config
+
 # 暴露端口
 EXPOSE 8080
 

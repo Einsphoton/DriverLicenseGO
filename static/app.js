@@ -26,12 +26,18 @@
     getFav() { return JSON.parse(localStorage.getItem(this.key_fav) || "[]"); },
     toggleFav(id) { const s = new Set(this.getFav()); if (s.has(id)) s.delete(id); else s.add(id); localStorage.setItem(this.key_fav, JSON.stringify([...s])); return s.has(id); },
     isFav(id) { return this.getFav().includes(id); },
-    key_ai: "s1_ai_config",
-    getAIConfig() {
-      try { return JSON.parse(localStorage.getItem(this.key_ai) || "{}"); } catch(e) { return {}; }
+    // AI 配置缓存（从服务器加载，所有客户端共享）
+    _aiConfigCache: null,
+    async loadAIConfig() {
+      if (this._aiConfigCache) return this._aiConfigCache;
+      try {
+        const r = await fetch("/api/ai/config");
+        this._aiConfigCache = await r.json();
+        return this._aiConfigCache;
+      } catch(e) { return { configured: false }; }
     },
-    setAIConfig(cfg) { localStorage.setItem(this.key_ai, JSON.stringify(cfg)); },
-    hasAIConfig() { const c = this.getAIConfig(); return !!(c.base_url && c.api_key); },
+    clearAIConfigCache() { this._aiConfigCache = null; },
+    hasAIConfig() { return !!(this._aiConfigCache && this._aiConfigCache.configured); },
   };
 
   function el(tag, props, ...children) {
@@ -131,15 +137,15 @@
   }
 
   // AI 讲解：流式请求并渲染
-  function triggerAIExplain(card, q, opts) {
+  async function triggerAIExplain(card, q, opts) {
     // 移除已有的讲解区
     const existing = card.querySelector(".ai-explain-area");
     if (existing) { existing.remove(); return; }
 
-    const config = Store.getAIConfig();
-    if (!config.base_url || !config.api_key) {
+    const config = await Store.loadAIConfig();
+    if (!config.configured) {
       const tip = el("div", { class: "ai-explain-area", style: "margin-top:10px;padding:12px;border-radius:8px;background:var(--danger-bg);color:var(--danger);font-size:14px;" });
-      tip.appendChild(el("div", {}, "⚠️ 请先到设置页面配置 API"));
+      tip.appendChild(el("div", {}, "⚠️ 请先到设置页面配置 AI API"));
       const link = el("a", { href: "#/settings", style: "color:var(--primary);font-weight:600;" }, "前往设置 →");
       tip.appendChild(link);
       card.appendChild(tip);
@@ -159,7 +165,7 @@
     area.appendChild(content);
     card.appendChild(area);
 
-    // 构造请求体
+    // 构造请求体（不再传 config，后端从服务器文件读取）
     const body = {
       question: q.question,
       options: q.options,
@@ -168,7 +174,6 @@
       type: q.type,
       pic_url: q.pic_url || "",
       user_answer: opts.userAnswer || "",
-      config: config,
     };
 
     // 流式请求
@@ -787,8 +792,7 @@
     renderCurrent();
   }
 
-  function viewSettings() {
-    const cfg = Store.getAIConfig();
+  async function viewSettings() {
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("button", { class: "btn-back", onclick: () => go("#/") }, "← 返回"),
@@ -798,7 +802,25 @@
     const card = el("div", { class: "question-card" });
     card.appendChild(el("div", { class: "q-text", style: "font-size:17px;" }, "🤖 AI 讲解配置"));
     card.appendChild(el("div", { style: "font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:16px;" },
-      "配置 OpenAI 格式的 API 后，每道题都可以用 AI 通俗易懂地讲解。配置仅保存在本机浏览器，不会上传。"));
+      "配置保存在服务器端，所有设备共享。每道题都可以用 AI 通俗易懂地讲解。"));
+
+    // 加载中提示
+    card.appendChild(el("div", { style: "color:var(--text-muted);font-size:14px;padding:20px 0;" }, "加载配置中..."));
+    wrap.appendChild(card);
+    render(wrap);
+
+    // 从服务器加载当前配置
+    const cfg = await Store.loadAIConfig();
+    card.removeChild(card.lastChild);
+
+    // 服务器已配置状态提示
+    if (cfg.configured) {
+      const status = el("div", { style: "padding:10px 14px;border-radius:8px;background:var(--success-bg);color:var(--success);font-size:13px;margin-bottom:16px;" });
+      status.appendChild(el("div", { style: "font-weight:600;" }, "✅ AI 已配置"));
+      status.appendChild(el("div", { style: "font-size:12px;margin-top:4px;" },
+        cfg.base_url + " · " + cfg.model + " · Key: " + cfg.api_key_masked));
+      card.appendChild(status);
+    }
 
     // API 地址
     card.appendChild(el("label", { style: "display:block;font-size:13px;font-weight:600;margin-bottom:4px;" }, "API 地址"));
@@ -809,9 +831,13 @@
 
     // API Key
     card.appendChild(el("label", { style: "display:block;font-size:13px;font-weight:600;margin-bottom:4px;" }, "API Key"));
-    const keyInput = el("input", { type: "password", placeholder: "sk-...", value: cfg.api_key || "",
+    const keyInput = el("input", { type: "password", placeholder: "sk-...",
       style: "width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:var(--bg);color:var(--text);margin-bottom:12px;box-sizing:border-box;" });
+    keyInput.value = cfg.configured ? "" : ""; // 已配置时不回填 key（安全考虑），留空表示不修改
     card.appendChild(keyInput);
+    if (cfg.configured) {
+      card.appendChild(el("div", { style: "font-size:12px;color:var(--text-muted);margin-bottom:12px;" }, "已配置（留空表示不修改 Key）"));
+    }
 
     // 模型
     card.appendChild(el("label", { style: "display:block;font-size:13px;font-weight:600;margin-bottom:4px;" }, "模型名称"));
@@ -820,64 +846,90 @@
     card.appendChild(modelInput);
     card.appendChild(el("div", { style: "font-size:12px;color:var(--text-muted);margin-bottom:16px;" }, "推荐：gpt-4o-mini / deepseek-chat / qwen-plus 等"));
 
-    // 保存按钮
-    const saveBtn = el("button", { class: "btn btn-primary", style: "width:100%;padding:12px;font-size:15px;" }, "💾 保存配置");
-    saveBtn.onclick = () => {
-      const newCfg = {
-        base_url: urlInput.value.trim(),
-        api_key: keyInput.value.trim(),
-        model: modelInput.value.trim() || "gpt-4o-mini",
-      };
-      Store.setAIConfig(newCfg);
-      saveBtn.textContent = "✅ 已保存";
-      saveBtn.style.background = "var(--success)";
-      setTimeout(() => { saveBtn.textContent = "💾 保存配置"; saveBtn.style.background = ""; }, 2000);
+    // 保存按钮（保存到服务器）
+    const saveBtn = el("button", { class: "btn btn-primary", style: "width:100%;padding:12px;font-size:15px;" }, "💾 保存到服务器");
+    saveBtn.onclick = async () => {
+      const apiKeyVal = keyInput.value.trim();
+      saveBtn.textContent = "保存中...";
+      saveBtn.disabled = true;
+      try {
+        // 如果已配置且 key 留空，需要先获取当前 key —— 但后端不返回完整 key
+        // 所以已配置时留空表示不修改，需要特殊处理
+        if (cfg.configured && !apiKeyVal) {
+          // 不修改 key，只更新 url 和 model —— 但后端 POST 会覆盖整个配置
+          // 解决方案：前端提示用户输入 key
+          keyInput.style.borderColor = "var(--danger)";
+          keyInput.placeholder = "请输入 API Key（保存时需要填写）";
+          saveBtn.textContent = "💾 保存到服务器";
+          saveBtn.disabled = false;
+          return;
+        }
+        const resp = await fetch("/api/ai/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            base_url: urlInput.value.trim(),
+            api_key: apiKeyVal,
+            model: modelInput.value.trim() || "gpt-4o-mini",
+          }),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+          Store.clearAIConfigCache();
+          saveBtn.textContent = "✅ 已保存到服务器";
+          saveBtn.style.background = "var(--success)";
+          setTimeout(() => { viewSettings(); }, 1500); // 刷新页面
+        } else {
+          saveBtn.textContent = "❌ 保存失败";
+          saveBtn.disabled = false;
+        }
+      } catch(e) {
+        saveBtn.textContent = "❌ " + e.message;
+        saveBtn.disabled = false;
+      }
     };
     card.appendChild(saveBtn);
 
     // 测试按钮
-    if (cfg.base_url && cfg.api_key) {
-      const testBtn = el("button", { class: "btn btn-secondary", style: "width:100%;padding:12px;font-size:15px;margin-top:8px;" }, "🧪 测试连接");
-      testBtn.onclick = async () => {
-        testBtn.textContent = "测试中...";
-        testBtn.disabled = true;
-        try {
-          const resp = await fetch("/api/ai/explain", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              question: "红灯亮时，车辆应该怎么做？",
-              options: [{ key: "A", text: "继续通行" }, { key: "B", text: "停车等待" }],
-              answer: "B",
-              analysis: "红灯禁止通行",
-              type: "single_choice",
-              config: cfg,
-            }),
-          });
-          if (resp.ok) {
-            const reader = resp.body.getReader();
-            const { value } = await reader.read();
-            const text = new TextDecoder().decode(value);
-            if (text.includes("error")) {
-              testBtn.textContent = "❌ 连接失败";
-              testBtn.style.color = "var(--danger)";
-            } else {
-              testBtn.textContent = "✅ 连接成功";
-              testBtn.style.color = "var(--success)";
-            }
-          } else {
-            testBtn.textContent = "❌ HTTP " + resp.status;
+    const testBtn = el("button", { class: "btn btn-secondary", style: "width:100%;padding:12px;font-size:15px;margin-top:8px;" }, "🧪 测试连接");
+    testBtn.onclick = async () => {
+      testBtn.textContent = "测试中...";
+      testBtn.disabled = true;
+      try {
+        const resp = await fetch("/api/ai/explain", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question: "红灯亮时，车辆应该怎么做？",
+            options: [{ key: "A", text: "继续通行" }, { key: "B", text: "停车等待" }],
+            answer: "B",
+            analysis: "红灯禁止通行",
+            type: "single_choice",
+          }),
+        });
+        if (resp.ok) {
+          const reader = resp.body.getReader();
+          const { value } = await reader.read();
+          const text = new TextDecoder().decode(value);
+          if (text.includes("error")) {
+            testBtn.textContent = "❌ 连接失败";
             testBtn.style.color = "var(--danger)";
+          } else {
+            testBtn.textContent = "✅ 连接成功";
+            testBtn.style.color = "var(--success)";
           }
-        } catch(e) {
-          testBtn.textContent = "❌ " + e.message;
+        } else {
+          testBtn.textContent = "❌ HTTP " + resp.status;
           testBtn.style.color = "var(--danger)";
         }
-        testBtn.disabled = false;
-        setTimeout(() => { testBtn.textContent = "🧪 测试连接"; testBtn.style.color = ""; }, 3000);
-      };
-      card.appendChild(testBtn);
-    }
+      } catch(e) {
+        testBtn.textContent = "❌ " + e.message;
+        testBtn.style.color = "var(--danger)";
+      }
+      testBtn.disabled = false;
+      setTimeout(() => { testBtn.textContent = "🧪 测试连接"; testBtn.style.color = ""; }, 3000);
+    };
+    card.appendChild(testBtn);
 
     wrap.appendChild(card);
 
