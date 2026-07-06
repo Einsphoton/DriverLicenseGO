@@ -26,6 +26,12 @@
     getFav() { return JSON.parse(localStorage.getItem(this.key_fav) || "[]"); },
     toggleFav(id) { const s = new Set(this.getFav()); if (s.has(id)) s.delete(id); else s.add(id); localStorage.setItem(this.key_fav, JSON.stringify([...s])); return s.has(id); },
     isFav(id) { return this.getFav().includes(id); },
+    key_ai: "s1_ai_config",
+    getAIConfig() {
+      try { return JSON.parse(localStorage.getItem(this.key_ai) || "{}"); } catch(e) { return {}; }
+    },
+    setAIConfig(cfg) { localStorage.setItem(this.key_ai, JSON.stringify(cfg)); },
+    hasAIConfig() { const c = this.getAIConfig(); return !!(c.base_url && c.api_key); },
   };
 
   function el(tag, props, ...children) {
@@ -114,7 +120,108 @@
       card.appendChild(favBtn);
     }
 
+    // AI 讲解按钮（练习模式、错题本、考试结果页显示）
+    if (opts.showAI) {
+      const aiBtn = el("button", { class: "ai-explain-btn bookmark-btn", style: "margin-top:8px;color:var(--primary);border-color:var(--primary);border-width:1.5px;" }, "🤖 AI 讲解");
+      aiBtn.onclick = () => triggerAIExplain(card, q, opts);
+      card.appendChild(aiBtn);
+    }
+
     return card;
+  }
+
+  // AI 讲解：流式请求并渲染
+  function triggerAIExplain(card, q, opts) {
+    // 移除已有的讲解区
+    const existing = card.querySelector(".ai-explain-area");
+    if (existing) { existing.remove(); return; }
+
+    const config = Store.getAIConfig();
+    if (!config.base_url || !config.api_key) {
+      const tip = el("div", { class: "ai-explain-area", style: "margin-top:10px;padding:12px;border-radius:8px;background:var(--danger-bg);color:var(--danger);font-size:14px;" });
+      tip.appendChild(el("div", {}, "⚠️ 请先到设置页面配置 API"));
+      const link = el("a", { href: "#/settings", style: "color:var(--primary);font-weight:600;" }, "前往设置 →");
+      tip.appendChild(link);
+      card.appendChild(tip);
+      return;
+    }
+
+    const area = el("div", { class: "ai-explain-area", style: "margin-top:10px;padding:14px;border-radius:10px;background:var(--card);border:1px solid var(--primary);border-left:3px solid var(--primary);" });
+    const header = el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;" });
+    header.appendChild(el("span", { style: "font-size:13px;font-weight:600;color:var(--primary);" }, "🤖 AI 讲解中..."));
+    const closeBtn = el("button", { style: "border:none;background:none;font-size:18px;cursor:pointer;color:var(--text-muted);padding:0 4px;" }, "×");
+    closeBtn.onclick = () => area.remove();
+    header.appendChild(closeBtn);
+    area.appendChild(header);
+
+    const content = el("div", { class: "ai-content", style: "font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;" });
+    content.textContent = "正在思考中";
+    area.appendChild(content);
+    card.appendChild(area);
+
+    // 构造请求体
+    const body = {
+      question: q.question,
+      options: q.options,
+      answer: q.answer,
+      analysis: q.analysis || "",
+      type: q.type,
+      pic_url: q.pic_url || "",
+      user_answer: opts.userAnswer || "",
+      config: config,
+    };
+
+    // 流式请求
+    fetch("/api/ai/explain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(resp => {
+      if (!resp.ok) {
+        return resp.json().then(err => { throw new Error(err.error || "HTTP " + resp.status); });
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+      let firstChunk = true;
+
+      function pump() {
+        return reader.read().then(({ done, value }) => {
+          if (done) {
+            if (!fullText) content.textContent = "（讲解完成）";
+            header.querySelector("span").textContent = "🤖 AI 讲解";
+            return;
+          }
+          const text = decoder.decode(value, { stream: true });
+          const lines = text.split("\n");
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const obj = JSON.parse(payload);
+              if (obj.error) {
+                content.textContent = "❌ " + obj.error;
+                content.style.color = "var(--danger)";
+                header.querySelector("span").textContent = "🤖 讲解失败";
+                return;
+              }
+              if (obj.content) {
+                if (firstChunk) { fullText = ""; firstChunk = false; }
+                fullText += obj.content;
+                content.textContent = fullText;
+              }
+            } catch(e) {}
+          }
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(err => {
+      content.textContent = "❌ " + (err.message || "请求失败");
+      content.style.color = "var(--danger)";
+      header.querySelector("span").textContent = "🤖 讲解失败";
+    });
   }
 
   function renderAnswerSheet(state, onJump) {
@@ -174,9 +281,14 @@
     const stats = await get(API.stats(currentType));
     const vehicleType = stats.vehicle_type || "C1/C2";
     const wrap = el("div");
+    const navRight = el("div", { style: "display:flex;align-items:center;gap:12px;" });
+    navRight.appendChild(el("div", { class: "stats-mini" }, vehicleType + " · " + stats.total + " 题"));
+    const settingsIcon = el("div", { style: "font-size:20px;cursor:pointer;", title: "设置" }, "⚙️");
+    settingsIcon.onclick = () => go("#/settings");
+    navRight.appendChild(settingsIcon);
     wrap.appendChild(el("div", { class: "navbar" },
       el("div", { class: "logo" }, el("span", { class: "accent" }, "驾照"), "·科目一"),
-      el("div", { class: "stats-mini" }, vehicleType + " · " + stats.total + " 题")
+      navRight
     ));
 
     const banner = el("div", { class: "stat-banner" });
@@ -403,6 +515,8 @@
             correctKey: d.correct_answer,
             wrongKey: d.is_correct ? null : d.user_answer,
             showFav: true,
+            showAI: true,
+            userAnswer: d.user_answer,
           });
           list.appendChild(card);
         });
@@ -477,6 +591,8 @@
         wrongKey: isRevealed && userAns !== q.answer ? userAns : null,
         mark: isRevealed,
         showFav: true,
+        showAI: true,
+        userAnswer: userAns,
         onSelect: (key) => {
           state.revealed[q.id] = key;
           if (key !== q.answer) Store.addWrong(q.id);
@@ -567,6 +683,8 @@
           wrongKey: isRevealed && userAns !== q.answer ? userAns : null,
           mark: isRevealed,
           showFav: true,
+          showAI: true,
+          userAnswer: userAns,
           onSelect: (key) => {
             state.revealed[q.id] = key;
             if (key === q.answer) {
@@ -647,6 +765,8 @@
         wrongKey: isRevealed && userAns !== q.answer ? userAns : null,
         mark: isRevealed,
         showFav: true,
+        showAI: true,
+        userAnswer: userAns,
         onSelect: (key) => {
           state.revealed[q.id] = key;
           if (key !== q.answer) Store.addWrong(q.id); else Store.removeWrong(q.id);
@@ -667,6 +787,121 @@
     renderCurrent();
   }
 
+  function viewSettings() {
+    const cfg = Store.getAIConfig();
+    const wrap = el("div");
+    wrap.appendChild(el("div", { class: "navbar" },
+      el("button", { class: "btn-back", onclick: () => go("#/") }, "← 返回"),
+      el("div", { class: "stats-mini" }, "设置")
+    ));
+
+    const card = el("div", { class: "question-card" });
+    card.appendChild(el("div", { class: "q-text", style: "font-size:17px;" }, "🤖 AI 讲解配置"));
+    card.appendChild(el("div", { style: "font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:16px;" },
+      "配置 OpenAI 格式的 API 后，每道题都可以用 AI 通俗易懂地讲解。配置仅保存在本机浏览器，不会上传。"));
+
+    // API 地址
+    card.appendChild(el("label", { style: "display:block;font-size:13px;font-weight:600;margin-bottom:4px;" }, "API 地址"));
+    const urlInput = el("input", { type: "text", placeholder: "https://api.openai.com/v1", value: cfg.base_url || "",
+      style: "width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:var(--bg);color:var(--text);margin-bottom:12px;box-sizing:border-box;" });
+    card.appendChild(urlInput);
+    card.appendChild(el("div", { style: "font-size:12px;color:var(--text-muted);margin-bottom:12px;" }, "填到 /v1 即可，不要加 /chat/completions"));
+
+    // API Key
+    card.appendChild(el("label", { style: "display:block;font-size:13px;font-weight:600;margin-bottom:4px;" }, "API Key"));
+    const keyInput = el("input", { type: "password", placeholder: "sk-...", value: cfg.api_key || "",
+      style: "width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:var(--bg);color:var(--text);margin-bottom:12px;box-sizing:border-box;" });
+    card.appendChild(keyInput);
+
+    // 模型
+    card.appendChild(el("label", { style: "display:block;font-size:13px;font-weight:600;margin-bottom:4px;" }, "模型名称"));
+    const modelInput = el("input", { type: "text", placeholder: "gpt-4o-mini", value: cfg.model || "",
+      style: "width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:var(--bg);color:var(--text);margin-bottom:12px;box-sizing:border-box;" });
+    card.appendChild(modelInput);
+    card.appendChild(el("div", { style: "font-size:12px;color:var(--text-muted);margin-bottom:16px;" }, "推荐：gpt-4o-mini / deepseek-chat / qwen-plus 等"));
+
+    // 保存按钮
+    const saveBtn = el("button", { class: "btn btn-primary", style: "width:100%;padding:12px;font-size:15px;" }, "💾 保存配置");
+    saveBtn.onclick = () => {
+      const newCfg = {
+        base_url: urlInput.value.trim(),
+        api_key: keyInput.value.trim(),
+        model: modelInput.value.trim() || "gpt-4o-mini",
+      };
+      Store.setAIConfig(newCfg);
+      saveBtn.textContent = "✅ 已保存";
+      saveBtn.style.background = "var(--success)";
+      setTimeout(() => { saveBtn.textContent = "💾 保存配置"; saveBtn.style.background = ""; }, 2000);
+    };
+    card.appendChild(saveBtn);
+
+    // 测试按钮
+    if (cfg.base_url && cfg.api_key) {
+      const testBtn = el("button", { class: "btn btn-secondary", style: "width:100%;padding:12px;font-size:15px;margin-top:8px;" }, "🧪 测试连接");
+      testBtn.onclick = async () => {
+        testBtn.textContent = "测试中...";
+        testBtn.disabled = true;
+        try {
+          const resp = await fetch("/api/ai/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              question: "红灯亮时，车辆应该怎么做？",
+              options: [{ key: "A", text: "继续通行" }, { key: "B", text: "停车等待" }],
+              answer: "B",
+              analysis: "红灯禁止通行",
+              type: "single_choice",
+              config: cfg,
+            }),
+          });
+          if (resp.ok) {
+            const reader = resp.body.getReader();
+            const { value } = await reader.read();
+            const text = new TextDecoder().decode(value);
+            if (text.includes("error")) {
+              testBtn.textContent = "❌ 连接失败";
+              testBtn.style.color = "var(--danger)";
+            } else {
+              testBtn.textContent = "✅ 连接成功";
+              testBtn.style.color = "var(--success)";
+            }
+          } else {
+            testBtn.textContent = "❌ HTTP " + resp.status;
+            testBtn.style.color = "var(--danger)";
+          }
+        } catch(e) {
+          testBtn.textContent = "❌ " + e.message;
+          testBtn.style.color = "var(--danger)";
+        }
+        testBtn.disabled = false;
+        setTimeout(() => { testBtn.textContent = "🧪 测试连接"; testBtn.style.color = ""; }, 3000);
+      };
+      card.appendChild(testBtn);
+    }
+
+    wrap.appendChild(card);
+
+    // 常见 API 提供商说明
+    const tips = el("div", { class: "question-card", style: "margin-top:12px;" });
+    tips.appendChild(el("div", { class: "q-text", style: "font-size:15px;" }, "常见 API 地址"));
+    const providers = [
+      ["OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"],
+      ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"],
+      ["通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
+      ["智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"],
+      ["月之暗面", "https://api.moonshot.cn/v1", "moonshot-v1-8k"],
+    ];
+    providers.forEach(([name, url, model]) => {
+      const item = el("div", { style: "padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;" });
+      item.appendChild(el("div", { style: "font-weight:600;" }, name + " · " + model));
+      item.appendChild(el("div", { style: "color:var(--text-muted);font-size:12px;" }, url));
+      tips.appendChild(item);
+    });
+    wrap.appendChild(tips);
+
+    render(wrap);
+  }
+
   function router() {
     const hash = location.hash.slice(1) || "/";
     if (hash === "/" || hash === "") return viewHome().catch(errHandler);
@@ -675,6 +910,7 @@
     if (hash === "/practice") return viewPractice().catch(errHandler);
     if (hash === "/wrong") return viewWrong().catch(errHandler);
     if (hash === "/category") return viewCategory().catch(errHandler);
+    if (hash === "/settings") return viewSettings();
     const catMatch = hash.match(/^\/category\/(.+)$/);
     if (catMatch) return viewCategoryDetail(decodeURIComponent(catMatch[1])).catch(errHandler);
     return viewHome().catch(errHandler);

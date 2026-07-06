@@ -2,11 +2,14 @@
 科目一模拟考试 - Flask 后端
 提供题库 API、模拟考试抽题、统计接口
 支持两种考试类型：新考驾照（100题/45分钟）、恢复驾照（50题/30分钟）
+支持 OpenAI 格式 API 集成，AI 讲解题目
 """
 import json
 import random
+import urllib.request
+import urllib.error
 from pathlib import Path
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "questions.json"
@@ -308,6 +311,144 @@ def get_question(qid):
     if not q:
         return jsonify({"error": "not found"}), 404
     return jsonify(q)
+
+
+# ==================== AI 讲解 ====================
+
+AI_SYSTEM_PROMPT = """你是一位耐心、专业的驾考教练，正在帮助一位中年阿姨备考科目一/恢复驾驶资格考试。
+
+你的讲解风格：
+1. 通俗易懂，避免专业术语，用大白话解释
+2. 先直接说正确答案是什么，再解释为什么
+3. 逐个分析每个选项对错的原因
+4. 补充相关的交通法规知识点或记忆口诀
+5. 如果题目涉及图片（交通标志/手势信号），描述图片内容并解释含义
+6. 鼓励学员，语气亲切温和
+
+回答格式：
+- 控制在 300 字以内
+- 用简短的段落，每段 1-2 句话
+- 可以用 emoji 增加亲切感但不要过度"""
+
+
+@app.route("/api/ai/explain", methods=["POST"])
+def ai_explain():
+    """
+    AI 讲解题目（流式 SSE 响应）
+    请求体：
+    {
+      "question": "题干",
+      "options": [{"key":"A","text":"..."}, ...],
+      "answer": "B",
+      "analysis": "官方解析",
+      "type": "judge|single_choice",
+      "pic_url": "...",
+      "user_answer": "A",  // 可选，用户选的答案
+      "config": {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-...",
+        "model": "gpt-4o-mini"
+      }
+    }
+    """
+    data = request.get_json()
+    config = data.get("config", {})
+
+    base_url = (config.get("base_url") or "").rstrip("/")
+    api_key = config.get("api_key", "")
+    model = config.get("model") or "gpt-4o-mini"
+
+    if not base_url or not api_key:
+        return jsonify({"error": "请先在设置中配置 API 地址和密钥"}), 400
+
+    # 构造题目描述
+    q_text = data.get("question", "")
+    options = data.get("options", [])
+    answer = data.get("answer", "")
+    analysis = data.get("analysis", "")
+    q_type = data.get("type", "")
+    pic_url = data.get("pic_url", "")
+    user_answer = data.get("user_answer", "")
+
+    opt_str = "\n".join([f"  {o['key']}. {o['text']}" for o in options])
+    type_label = "判断题" if q_type == "judge" else "单选题"
+
+    user_msg = f"""请讲解以下驾考题目：
+
+【{type_label}】{q_text}
+
+选项：
+{opt_str}
+
+正确答案：{answer}
+"""
+    if user_answer and user_answer != answer:
+        user_msg += f"学员选了：{user_answer}（选错了）\n"
+    elif user_answer:
+        user_msg += "学员选对了！\n"
+
+    if pic_url:
+        user_msg += f"\n（本题配有图片：{pic_url}）\n"
+
+    if analysis:
+        user_msg += f"\n官方解析：{analysis}\n"
+
+    user_msg += "\n请用通俗易懂的语言讲解这道题。"
+
+    # 调用 OpenAI 格式 API（流式）
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        "stream": True,
+        "temperature": 0.7,
+        "max_tokens": 600,
+    }).encode("utf-8")
+
+    chat_url = base_url + "/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + api_key,
+    }
+
+    def generate():
+        try:
+            req = urllib.request.Request(chat_url, data=payload, headers=headers, method="POST")
+            resp = urllib.request.urlopen(req, timeout=60)
+
+            buf = b""
+            for chunk in resp:
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith(b"data: "):
+                        line = line[6:]
+                    if line == b"[DONE]":
+                        yield "data: [DONE]\n\n"
+                        return
+                    try:
+                        obj = json.loads(line)
+                        delta = obj.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield "data: " + json.dumps({"content": content}, ensure_ascii=False) + "\n\n"
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
+            yield "data: [DONE]\n\n"
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            yield "data: " + json.dumps({"error": "API 错误 " + str(e.code) + ": " + err_body[:200]}, ensure_ascii=False) + "\n\n"
+        except urllib.error.URLError as e:
+            yield "data: " + json.dumps({"error": "连接失败: " + str(e.reason)}, ensure_ascii=False) + "\n\n"
+        except Exception as e:
+            yield "data: " + json.dumps({"error": "内部错误: " + str(e)}, ensure_ascii=False) + "\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 
 if __name__ == "__main__":
