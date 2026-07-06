@@ -15,9 +15,37 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 
 # 启动时加载题库到内存
 with open(DATA_FILE, encoding="utf-8") as f:
-    ALL_QUESTIONS = json.load(f)
+    RAW_QUESTIONS = json.load(f)
 
-# 按题型分组（新考驾照：全题库）
+# --- C1/C2 小型汽车题库筛选 ---
+# 原始题库为综合题库（含 A/B 照大型车辆题目），本应用面向 C1/C2 用户，需排除大型车辆专属题
+_LARGE_VEHICLE_KEYWORDS = [
+    "大型客车", "重型牵引挂车", "城市公交车", "中型客车", "大型货车",
+    "半挂", "全挂", "牵引车", "挂车号牌", "重型载货", "中型载货",
+    "危险品运输", "有轨电车", "无轨电车", "校车驾驶",
+    "持大型客车", "持重型牵引", "持城市公交", "持中型客车", "持大型货车",
+]
+# 保留通用法规题（C1 也需要知道，如实习期不得牵引挂车、避让校车等）
+_KEEP_PATTERNS = ["实习期", "避让校车", "不按规定避让校车"]
+
+
+def _is_large_vehicle_exclusive(q):
+    """判断是否为大型车辆专属题（C1/C2 不考）"""
+    text = q.get("question", "") + " " + q.get("analysis", "")
+    for kw in _LARGE_VEHICLE_KEYWORDS:
+        if kw in text:
+            # 通用法规题保留
+            for keep in _KEEP_PATTERNS:
+                if keep in text:
+                    return False
+            return True
+    return False
+
+
+# C1/C2 小型汽车专用题库
+ALL_QUESTIONS = [q for q in RAW_QUESTIONS if not _is_large_vehicle_exclusive(q)]
+
+# 按题型分组（新考驾照：C1 全题库）
 JUDGE_QUESTIONS = [q for q in ALL_QUESTIONS if q["type"] == "judge"]
 CHOICE_QUESTIONS = [q for q in ALL_QUESTIONS if q["type"] == "single_choice"]
 
@@ -125,6 +153,7 @@ def stats():
         "total": len(pool),
         "judge": len(judges),
         "choice": len(choices),
+        "vehicle_type": "C1/C2",
         "categories": [{"keyword": k, "count": len(v)} for k, v in cats],
         "exam_type": exam_type,
         "exam_types": {

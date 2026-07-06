@@ -172,10 +172,11 @@
   async function viewHome() {
     const currentType = Store.getExamType();
     const stats = await get(API.stats(currentType));
+    const vehicleType = stats.vehicle_type || "C1/C2";
     const wrap = el("div");
     wrap.appendChild(el("div", { class: "navbar" },
       el("div", { class: "logo" }, el("span", { class: "accent" }, "驾照"), "·科目一"),
-      el("div", { class: "stats-mini" }, "题库 " + stats.total + " 题")
+      el("div", { class: "stats-mini" }, vehicleType + " · " + stats.total + " 题")
     ));
 
     const banner = el("div", { class: "stat-banner" });
