@@ -456,29 +456,68 @@ def ai_explain():
     def generate():
         try:
             req = urllib.request.Request(chat_url, data=payload, headers=headers, method="POST")
-            resp = urllib.request.urlopen(req, timeout=60)
+            resp = urllib.request.urlopen(req, timeout=90)
 
-            buf = b""
-            for chunk in resp:
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
+            buf = ""
+            has_content = False
+            while True:
+                raw = resp.read(4096)
+                if not raw:
+                    break
+                buf += raw.decode("utf-8", errors="replace")
+
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
                     line = line.strip()
                     if not line:
                         continue
-                    if line.startswith(b"data: "):
+                    if line.startswith("data: "):
                         line = line[6:]
-                    if line == b"[DONE]":
+                    elif line.startswith("data:"):
+                        line = line[5:]
+                    if line == "[DONE]":
                         yield "data: [DONE]\n\n"
                         return
                     try:
                         obj = json.loads(line)
-                        delta = obj.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield "data: " + json.dumps({"content": content}, ensure_ascii=False) + "\n\n"
+                        # 检查 API 错误
+                        if "error" in obj:
+                            err_msg = obj["error"].get("message", str(obj["error"]))
+                            yield "data: " + json.dumps({"error": "API 返回错误: " + err_msg}, ensure_ascii=False) + "\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        # 流式格式：choices[0].delta.content
+                        choices = obj.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                has_content = True
+                                yield "data: " + json.dumps({"content": content}, ensure_ascii=False) + "\n\n"
                     except (json.JSONDecodeError, IndexError, KeyError):
                         continue
+
+            # 流式解析结束后，如果没有提取到任何 content，尝试非流式回退
+            # （某些 API 或特定请求可能返回非流式 JSON 而非 SSE）
+            if not has_content and buf.strip():
+                try:
+                    obj = json.loads(buf.strip())
+                    if "error" in obj:
+                        err_msg = obj["error"].get("message", str(obj["error"])) if isinstance(obj["error"], dict) else str(obj["error"])
+                        yield "data: " + json.dumps({"error": "API 错误: " + err_msg}, ensure_ascii=False) + "\n\n"
+                    else:
+                        choices = obj.get("choices", [])
+                        if choices:
+                            content = choices[0].get("message", {}).get("content", "")
+                            if content:
+                                yield "data: " + json.dumps({"content": content}, ensure_ascii=False) + "\n\n"
+                                has_content = True
+                except json.JSONDecodeError:
+                    pass
+
+            if not has_content:
+                yield "data: " + json.dumps({"error": "AI 返回了空内容，请重试或检查 API 配置"}, ensure_ascii=False) + "\n\n"
+
             yield "data: [DONE]\n\n"
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace")
